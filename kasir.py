@@ -9,8 +9,9 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="MYSA SPACE POS", layout="wide")
 
 # KONEKSI GOOGLE SHEETS
-conn = st.connection("gsheets", type=GSheetsConnection)
+SHEET_URL = "https://docs.google.com/spreadsheets/d/13TMkNigrkxwtU4JEtTi2PDW_mJWfsszfljOCJEHusn0/edit"
 
+conn = st.connection("gsheets", type=GSheetsConnection)
 # --- CSS KHUSUS UNTUK PRINTER THERMAL ---
 st.markdown("""
 <style>
@@ -121,7 +122,7 @@ with col2:
             urutan = 1
 
             # Ambil data dari Google Sheets
-            df_riwayat = conn.read().dropna(how="all")
+            df_riwayat = conn.read(spreadsheet=SHEET_URL, usecols=[0,1,2,3,4,5,6,7])
 
             if not df_riwayat.empty and 'Order ID' in df_riwayat.columns:
                 df_riwayat['Order ID'] = df_riwayat['Order ID'].astype(str)
