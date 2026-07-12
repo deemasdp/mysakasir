@@ -1,14 +1,15 @@
 import streamlit as st
 import datetime
 import base64
-import os
-import csv
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
 import streamlit.components.v1 as components
 
 # --- KONFIGURASI ---
 st.set_page_config(page_title="MYSA SPACE POS", layout="wide")
-CSV_FILE = "riwayat_transaksi.csv"
+
+# KONEKSI GOOGLE SHEETS
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- CSS KHUSUS UNTUK PRINTER THERMAL ---
 st.markdown("""
@@ -116,50 +117,41 @@ with col2:
         else:
             now = datetime.datetime.now()
             tgl, jam = now.strftime("%d %b %Y"), now.strftime("%H:%M:%S")
-            
-            # --- LOGIKA ORDER ID BARU (MS + YY + MM + NNN) ---
-            prefix_oid = now.strftime("MS%y%m") # Menghasilkan "MS2607" untuk Juli 2026
+            prefix_oid = now.strftime("MS%y%m") 
             urutan = 1
-            
-            if os.path.exists(CSV_FILE):
-                try:
-                    df_temp = pd.read_csv(CSV_FILE)
-                    if not df_temp.empty and 'Order ID' in df_temp.columns:
-                        # Filter transaksi yang Order ID-nya dimulai dengan prefix bulan ini
-                        df_temp['Order ID'] = df_temp['Order ID'].astype(str)
-                        df_bulan_ini = df_temp[df_temp['Order ID'].str.startswith(prefix_oid)]
-                        
-                        if not df_bulan_ini.empty:
-                            # Ambil Order ID baris terakhir
-                            last_oid = df_bulan_ini.iloc[-1]['Order ID']
-                            # Ekstrak 3 digit terakhir dan jadikan angka, lalu tambah 1
-                            last_urutan = int(last_oid[-3:])
-                            urutan = last_urutan + 1
-                            
-                            # Jika urutan melebihi 999, kembali ke 1 (sesuai batas maksimal)
-                            if urutan > 999:
-                                urutan = 1
-                except Exception:
-                    pass # Jika terjadi error (misal file korup), otomatis mulai dari 1
-            
-            # Format menjadi 3 digit (contoh: 1 menjadi "001")
-            oid = f"{prefix_oid}{urutan:03d}"
-            # ------------------------------------------------
 
-            items_html = "".join([f"<tr><td>{it['nama']}<br>{it['jumlah']}x @ {it['harga']:,}</td><td style='text-align:right; vertical-align:bottom;'>{it['subtotal']:,}</td></tr>" for it in st.session_state.keranjang])
+            # Ambil data dari Google Sheets
+            df_riwayat = conn.read().dropna(how="all")
+
+            if not df_riwayat.empty and 'Order ID' in df_riwayat.columns:
+                df_riwayat['Order ID'] = df_riwayat['Order ID'].astype(str)
+                df_bulan_ini = df_riwayat[df_riwayat['Order ID'].str.startswith(prefix_oid)]
+                
+                if not df_bulan_ini.empty:
+                    last_oid = df_bulan_ini.iloc[-1]['Order ID']
+                    last_urutan = int(last_oid[-3:])
+                    urutan = last_urutan + 1
+                    if urutan > 999: urutan = 1
+            
+            oid = f"{prefix_oid}{urutan:03d}"
             
             struk_total_items = sum([it['jumlah'] for it in st.session_state.keranjang])
             ringkasan_pesanan = ", ".join([f"{it['nama']} ({it['jumlah']}x)" for it in st.session_state.keranjang])
 
-            # Simpan Data Transaksi ke CSV
-            file_exists = os.path.isfile(CSV_FILE)
-            with open(CSV_FILE, mode='a', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                if not file_exists:
-                    writer.writerow(['Order ID', 'Tanggal', 'Jam', 'Tipe Pesanan', 'Metode Bayar', 'Total Item', 'Total Pendapatan', 'Detail Pesanan'])
-                writer.writerow([oid, tgl, jam, tipe, metode, struk_total_items, total, ringkasan_pesanan])
+            # Susun baris data baru
+            new_data = pd.DataFrame([{
+                'Order ID': oid, 'Tanggal': tgl, 'Jam': jam, 
+                'Tipe Pesanan': tipe, 'Metode Bayar': metode, 
+                'Total Item': struk_total_items, 'Total Pendapatan': total, 
+                'Detail Pesanan': ringkasan_pesanan
+            }])
 
-            # HTML Struk (Menggunakan tabel agar titik dua ":" sejajar sempurna)
+            # Gabungkan dengan data lama dan simpan ke Sheets
+            df_updated = pd.concat([df_riwayat, new_data], ignore_index=True)
+            conn.update(data=df_updated)
+
+            items_html = "".join([f"<tr><td>{it['nama']}<br>{it['jumlah']}x @ {it['harga']:,}</td><td style='text-align:right; vertical-align:bottom;'>{it['subtotal']:,}</td></tr>" for it in st.session_state.keranjang])
+
             st.session_state.struk_terakhir = f"""<div id="printable-receipt">
 <div style="background:#fff; padding:20px; border:1px solid #ccc; width:300px; font-family:'Courier New', monospace; font-size:11px; color:#000;">
 <div style="text-align:center; border-bottom:1px dashed #000; padding-bottom:10px;">
@@ -201,10 +193,9 @@ Jumlah Item: {struk_total_items}
 </div>"""
             
             st.session_state.keranjang = []
-            st.success("Transaksi Berhasil Disimpan!")
+            st.success("Transaksi Berhasil Disimpan ke Cloud!")
             st.rerun()
 
-# --- TAMPILAN BAWAH (STRUK & RIWAYAT) ---
 st.markdown("---")
 col_bawah1, col_bawah2 = st.columns([1, 2])
 
@@ -213,7 +204,6 @@ with col_bawah1:
         st.markdown("### 📄 Struk Terakhir")
         st.markdown(st.session_state.struk_terakhir, unsafe_allow_html=True)
         
-        # Fitur Download Gambar (PNG)
         download_js = """
         <script>
         if (!window.parent.document.getElementById('html2canvas-script')) {
@@ -235,7 +225,7 @@ with col_bawah1:
                     link.click();
                 });
             } else {
-                alert('Sistem sedang menyiapkan gambar. Silakan klik tombol sekali lagi.');
+                alert('Sistem sedang menyiapkan gambar. Silakan klik tombol sekali.');
             }
         }
         </script>
@@ -243,58 +233,41 @@ with col_bawah1:
         """
         components.html(download_js, height=55)
         
-        # Tombol Print Fisik
         if st.button("🖨️ Cetak Fisik ke Printer", type="secondary", use_container_width=True):
             components.html("<script>window.parent.print();</script>", width=0, height=0)
 
 with col_bawah2:
     st.markdown("### 📊 Riwayat Transaksi Hari Ini")
-    if os.path.exists(CSV_FILE):
-        df_riwayat = pd.read_csv(CSV_FILE)
-        
+    try:
+        df_riwayat = conn.read().dropna(how="all")
         if df_riwayat.empty:
-            st.info("Belum ada data transaksi yang tersimpan.")
+            st.info("Belum ada data transaksi tersimpan di Google Sheets.")
         else:
             st.dataframe(df_riwayat.iloc[::-1], use_container_width=True, hide_index=True)
-            total_pendapatan = df_riwayat['Total Pendapatan'].sum()
-            total_terjual = df_riwayat['Total Item'].sum()
+            total_pendapatan = pd.to_numeric(df_riwayat['Total Pendapatan']).sum()
+            total_terjual = pd.to_numeric(df_riwayat['Total Item']).sum()
             st.info(f"**Ringkasan Penjualan:** {len(df_riwayat)} Transaksi | Terjual: {total_terjual} Item | Omzet: Rp {total_pendapatan:,}")
             
-            # --- FITUR HAPUS TRANSAKSI SPESIFIK ---
             st.markdown("#### Manajemen Riwayat")
             col_m1, col_m2 = st.columns([2, 1])
             with col_m1:
-                # Pilihan dropdown bisa memilih lebih dari satu (multiselect)
-                list_order = df_riwayat['Order ID'].tolist()
+                list_order = df_riwayat['Order ID'].astype(str).tolist()
                 order_to_delete = st.multiselect("Pilih Order ID yang ingin dihapus:", list_order)
             with col_m2:
-                st.write("") # Memberi jarak agar tombol sejajar dengan kotak input
                 st.write("")
-                if st.button("🗑️ Hapus Transaksi Terpilih", use_container_width=True):
+                st.write("")
+                if st.button("🗑️ Hapus Terpilih", use_container_width=True):
                     if order_to_delete:
-                        # Menghapus baris yang Order ID-nya dipilih
                         df_riwayat = df_riwayat[~df_riwayat['Order ID'].isin(order_to_delete)]
-                        df_riwayat.to_csv(CSV_FILE, index=False)
-                        st.success("Transaksi berhasil dihapus!")
+                        conn.update(data=df_riwayat)
+                        st.success("Transaksi dihapus!")
                         st.rerun()
                     else:
-                        st.warning("Pilih minimal 1 transaksi untuk dihapus.")
+                        st.warning("Pilih minimal 1 transaksi.")
             
-            st.markdown("---")
-            # Fitur Hapus Semua & Download Riwayat
-            col_btn1, col_btn2 = st.columns(2)
-            with col_btn1:
-                if st.button("🚨 Hapus Semua Riwayat", use_container_width=True):
-                    os.remove(CSV_FILE)
-                    st.rerun()
-            with col_btn2:
-                csv_data = df_riwayat.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="💾 Download Excel (CSV)",
-                    data=csv_data,
-                    file_name=f"Riwayat_Penjualan_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-    else:
-        st.info("Belum ada data transaksi yang tersimpan.")
+            if st.button("🚨 Hapus Semua Riwayat", use_container_width=True):
+                empty_df = pd.DataFrame(columns=['Order ID', 'Tanggal', 'Jam', 'Tipe Pesanan', 'Metode Bayar', 'Total Item', 'Total Pendapatan', 'Detail Pesanan'])
+                conn.update(data=empty_df)
+                st.rerun()
+    except Exception as e:
+        st.error(f"Gagal memuat data dari Google Sheets. Pastikan rahasia API sudah disetel dengan benar. Error: {e}")
